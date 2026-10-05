@@ -1,8 +1,8 @@
 /* A simple server in the internet domain using TCP
    The port number is passed as an argument */
 
-#include "poma_tcpconnector.h"
-#include "poma_bleconnector.h"
+#include "poma.h"
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,124 +12,90 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
-#include <pthread.h>
 
-int GlobalVar = 0;
+//#include "poma.h"
 
-void setterGlobalVar(WRITERFUNC, char *argument)
+void error(char *msg)
 {
-    if (argument != NULL)
-        GlobalVar = atoi(argument);
-    writer("done", strlen("done") );
+    perror(msg);
+    exit(1);
 }
 
-void getterGlobalVar(WRITERFUNC, char *argument)
+int GlobalVar=0;
+
+void setterGlobalVar(int sockfd, char *argument)
+{
+    if(argument != NULL)
+        GlobalVar = atoi(argument);
+    write(sockfd,"done\n",6);
+}
+
+void getterGlobalVar(int sockfd, char* argument)
 {
     char response[10];
-    sprintf(response, "%d", GlobalVar);
-    writer(response, strlen(response));
-}
+    sprintf(response,"%d\n", GlobalVar);
+    write(sockfd,response,strlen(response));
 
-typedef struct Server_Thread_Spec
-{
-
-    PoMA_BLE_SPEC *blue_spec;
-    PoMA_TCP_SPEC *tcp_spec;
-    Topic *head;
-
-} Server_Thread_Spec;
-
-void *tcp_thread(void *param)
-{
-
-    Server_Thread_Spec *spec = (Server_Thread_Spec *)param;
-    spec->tcp_spec->processClientsLoop(spec->tcp_spec, spec->head);
-    return NULL;
-}
-
-void *blue_thread(void *param)
-{
-
-    Server_Thread_Spec *spec = (Server_Thread_Spec *)param;
-    spec->blue_spec->processClientsLoop(spec->blue_spec, spec->head);
-    return NULL;
 }
 
 int main(int argc, char *argv[])
 {
-    int tcp_port_idx = -1;
-    int blue_channel_idx = -1;
-
-    pthread_t t1, t2; // Thread handles
-    int spawn1 = -1;
-    int spawn2 = -1;
-
-    PoMA_TCP_SPEC *tcpSpec = malloc(sizeof(PoMA_TCP_SPEC));
-    PoMA_BLE_SPEC *btSpec = malloc(sizeof(PoMA_BLE_SPEC));
-
-    Server_Thread_Spec thread_spec;
+    int sockfd, newsockfd, portno;
+    socklen_t clilen;
+    unsigned char status = 1;
+    char buffer[256];
+    struct sockaddr_in serv_addr, cli_addr;
+    int n;
     Topic *topicHead;
-
     topicHead = createTopic("GlobalVar", getterGlobalVar, setterGlobalVar);
     addTopic(topicHead, createTopic("g_var", getterGlobalVar, setterGlobalVar));
 
     if (argc < 2)
     {
-        fprintf(stderr, "ERROR, no TCP port or Bluetooth channel provided\n");
-        fprintf(stderr, "Usage: %s --tcp_port PORT | --blue_channel CHANNEL  \n", argv[0]);
+        fprintf(stderr,"ERROR, no port provided\n");
         exit(1);
     }
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0)
+        error("ERROR opening socket");
+    bzero((char *) &serv_addr, sizeof(serv_addr));
+    portno = atoi(argv[1]);
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    serv_addr.sin_port = htons(portno);
+    if (bind(sockfd, (struct sockaddr *) &serv_addr,
+             sizeof(serv_addr)) < 0)
+        error("ERROR on binding");
+    listen(sockfd,5);
+    clilen = sizeof(cli_addr);
+    printf("Socket bound. Waiting on port %d... \n", portno);
+    newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
+    if (newsockfd < 0)
+        error("ERROR on accept");
+    printf("Client Connected.\n");
 
-    thread_spec.head = topicHead;
-
-    for (int i = 1; i < argc; i += 2)
+    while( status > 0 )
     {
-        const char *key = argv[i];
-
-        if ((strcmp(key, "--tcp_port") == 0) && argc > i + 1)
+        bzero(buffer,256);
+        n = read(newsockfd,buffer,255);
+        if (n < 0) error("ERROR reading from socket");
+                if (n < 0)
         {
-            tcp_port_idx = i + 1;
+            status = 0;
+            printf("status: %d \n", status);
+            error("ERROR writing to socket");
         }
-        else if ((strcmp(key, "--blue_channel") == 0) && argc > i + 1)
+        if (strlen(buffer) == 1 )
         {
-            blue_channel_idx = i + 1;
-        }
-        else if (strcmp(key, "--help") == 0)
-        {
-            fprintf(stderr, "Usage: %s --tcp_port PORT | --blue_channel  \n", argv[0]);
+            status = 0;
+            //printf("--status: %d \n", status);
         }
         else
         {
-            fprintf(stderr, "Usage: %s --tcp_port PORT | --blue_channel CHANNEL  \n", argv[0]);
-            return EXIT_FAILURE;
-        }
-    }
-    //printf("here ...argc %d tcp_port_idx %d\n", argc, tcp_port_idx);
-    /**************/
-    
-    if (tcp_port_idx != -1)
-    {
-        tcpSpec = createPoMATCPConnectSpec(tcpSpec, atoi(argv[tcp_port_idx]), SINGLE_USER); // or MULTI_USER
-        thread_spec.tcp_spec = tcpSpec;
-        if (spawn1 = pthread_create(&t1, NULL, tcp_thread, &thread_spec) != 0)
-        {
-            perror("Failed to create PoMA TCP thread ");
-            return -1;
-        }
-    }
+            processMessage(newsockfd, buffer, topicHead);
 
-    if (blue_channel_idx != -1)
-    {
-        btSpec = createPoMABLEConnectSpec(btSpec, atoi(argv[blue_channel_idx]), SINGLE_USER); // or MULTI_USER
-        thread_spec.blue_spec = btSpec;
-        if (spawn2 = pthread_create(&t2, NULL, blue_thread, &thread_spec) != 0)
-        {
-            perror("Failed to create PoMA Bluetooth thread ");
-            return -1;
         }
     }
-
-    spawn1 == 0 && pthread_join(t1, NULL);
-    spawn2 == 0 && pthread_join(t2, NULL);
+    close(newsockfd);
     return 0;
 }
